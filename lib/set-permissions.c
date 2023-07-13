@@ -483,6 +483,54 @@ set_acls (struct permission_context *ctx, const char *name, int desc,
 {
   int ret = 0;
 
+# if HAVE_RICHACL_GET_FILE
+  /* Richacls (Linux) */
+
+  if (! ctx->richacls_not_supported)
+    {
+      if (from_mode)
+	{
+	  if (ctx->richacl)
+	    richacl_free (ctx->richacl);
+	  ctx->richacl = richacl_from_mode (ctx->mode);
+	  if (ctx->richacl == NULL)
+	    ret = -1;
+	}
+
+      if (ret == 0 && ctx->richacl)
+	{
+	  if (desc != -1)
+	    ret = richacl_set_fd (desc, ctx->richacl);
+	  else
+	    ret = richacl_set_file (name, ctx->richacl);
+	  if (ret != 0)
+	    {
+	      mode_t mode_from_acl = ctx->mode;
+
+	      if (! acl_errno_valid (errno))
+		{
+		  ctx->richacls_not_supported = true;
+		  if (from_mode
+		      || richacl_equiv_mode (ctx->richacl,
+					     &mode_from_acl) == 0)
+		    ret = 0;
+		}
+	    }
+	  else
+	    {
+#if HAVE_ACL_GET_FILE
+	      ctx->acls_not_supported = true;
+#endif
+	      *acls_set = true;
+	      return 0; /* skip posix acls */
+	    }
+	}
+    }
+
+  /* fall through */
+
+# endif
+
 #if HAVE_ACL_GET_FILE
   /* POSIX 1003.1e (draft 17 -- abandoned) specific version.  */
   /* Linux, FreeBSD, Mac OS X, IRIX, Tru64 */
@@ -524,6 +572,9 @@ set_acls (struct permission_context *ctx, const char *name, int desc,
 	    }
 	  else
 	    {
+#if HAVE_RICHACL_GET_FILE
+	      ctx->richacls_not_supported = true;
+#endif
 	      *acls_set = true;
 	      if (S_ISDIR(ctx->mode))
 		{
@@ -566,7 +617,7 @@ set_acls (struct permission_context *ctx, const char *name, int desc,
 	{
 	  acl_free (acl);
 
-	  acl = acl_init (0);
+	  acl = acl_init (acl);
 	  if (acl)
 	    {
 	      if (HAVE_ACL_SET_FD && desc != -1)
@@ -582,13 +633,12 @@ set_acls (struct permission_context *ctx, const char *name, int desc,
   else
     {
       if (HAVE_ACL_SET_FD && desc != -1)
-	ret = acl_set_fd (desc, ctx->acl);
+	ret = acl_set_fd (desc, acl);
       else
-	ret = acl_set_file (name, ACL_TYPE_EXTENDED, ctx->acl);
+	ret = acl_set_file (name, ACL_TYPE_EXTENDED, acl);
       if (ret != 0)
 	{
-	  if (! acl_errno_valid (errno)
-	      && ! acl_extended_nontrivial (ctx->acl))
+	  if (! acl_errno_valid (saved_errno) && ! acl_extended_nontrivial (acl))
 	    ret = 0;
 	}
     }
@@ -612,13 +662,13 @@ set_acls (struct permission_context *ctx, const char *name, int desc,
   if (ret == 0 && ctx->count)
     {
       if (desc != -1)
-	ret = facl (desc, SETACL, ctx->count, ctx->entries);
+	ret = facl (desc, SETACL, count, entries);
       else
-	ret = acl (name, SETACL, ctx->count, ctx->entries);
+	ret = acl (name, SETACL, count, entries);
       if (ret < 0)
 	{
 	  if ((errno == ENOSYS || errno == EOPNOTSUPP || errno == EINVAL)
-	      && acl_nontrivial (ctx->count, ctx->entries) == 0)
+	      && acl_nontrivial (count, entries) == 0)
 	    ret = 0;
 	}
       else
@@ -629,13 +679,13 @@ set_acls (struct permission_context *ctx, const char *name, int desc,
   if (ret == 0 && ctx->ace_count)
     {
       if (desc != -1)
-	ret = facl (desc, ACE_SETACL, ctx->ace_count, ctx->ace_entries);
+	ret = facl (desc, ACE_SETACL, ace_count, ace_entries);
       else
-	ret = acl (name, ACE_SETACL, ctx->ace_count, ctx->ace_entries);
+	ret = acl (name, ACE_SETACL, ace_count, ace_entries);
       if (ret < 0)
 	{
 	  if ((errno == ENOSYS || errno == EINVAL || errno == ENOTSUP)
-	      && acl_ace_nontrivial (ctx->ace_count, ctx->ace_entries) == 0)
+	      && acl_ace_nontrivial (ace_count, ace_entries) == 0)
 	    ret = 0;
 	}
       else
@@ -697,9 +747,9 @@ set_acls (struct permission_context *ctx, const char *name, int desc,
   if (ret == 0 && ctx->have_u)
     {
       if (desc != -1)
-	ret = fchacl (desc, &ctx->u.a, ctx->u.a.acl_len);
+	ret = fchacl (desc, &u.a, u.a.acl_len);
       else
-	ret = chacl (name, &ctx->u.a, ctx->u.a.acl_len);
+	ret = chacl (name, &u.a, u.a.acl_len);
       if (ret < 0)
 	{
 	  if (errno == ENOSYS && from_mode)
@@ -778,6 +828,8 @@ set_permissions (struct permission_context *ctx, const char *name, int desc)
   /* On Cygwin, it is necessary to call chmod before acl, because
      chmod can change the contents of the ACL (in ways that don't
      change the allowed accesses, but still visible).  */
+  /* With richacls, it is necessary to call chmod before setting the acl,
+     because chmod would disable (mask) permissions like write_owner.  */
 
   early_chmod = (! MODE_INSIDE_ACL || (ctx->mode & (S_ISUID | S_ISGID | S_ISVTX)));
 # endif

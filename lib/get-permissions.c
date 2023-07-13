@@ -33,31 +33,54 @@ int
 get_permissions (const char *name, int desc, mode_t mode,
 		 struct permission_context *ctx)
 {
+  bool richacls_supported _GL_UNUSED = false;
+
   memset (ctx, 0, sizeof(*ctx));
   ctx->mode = mode;
 
-#if USE_ACL && HAVE_ACL_GET_FILE
+#if USE_ACL && (HAVE_ACL_GET_FILE || HAVE_RICHACL_GET_FILE)
+# if HAVE_RICHACL_GET_FILE
+  /* Richacls (Linux) */
+  if (desc != -1)
+    ctx->richacl = richacl_get_fd (desc);
+  else
+    ctx->richacl = richacl_get_file (name);
+  if (ctx->richacl == NULL && errno != ENODATA)
+    {
+      if (acl_errno_valid (errno))
+	return -1;
+    }
+  else
+    richacls_supported = true;
+# endif
+
+# if HAVE_ACL_GET_FILE
   /* POSIX 1003.1e (draft 17 -- abandoned) specific version.  */
   /* Linux, FreeBSD, Mac OS X, IRIX, Tru64 */
-# if !HAVE_ACL_TYPE_EXTENDED
+#  if !HAVE_ACL_TYPE_EXTENDED
   /* Linux, FreeBSD, IRIX, Tru64 */
 
-  if (HAVE_ACL_GET_FD && desc != -1)
-    ctx->acl = acl_get_fd (desc);
-  else
-    ctx->acl = acl_get_file (name, ACL_TYPE_ACCESS);
-  if (ctx->acl == NULL)
-    return acl_errno_valid (errno) ? -1 : 0;
-
-  /* With POSIX ACLs, a file cannot have "no" acl; a file without
-     extended permissions has a "minimal" acl which is equivalent to the
-     file mode.  */
-
-  if (S_ISDIR (mode))
+  /* A file system can either support richacls or posix acls, but not
+     both. */
+  if (! richacls_supported)
     {
-      ctx->default_acl = acl_get_file (name, ACL_TYPE_DEFAULT);
-      if (ctx->default_acl == NULL)
-	return -1;
+      if (HAVE_ACL_GET_FD && desc != -1)
+	ctx->acl = acl_get_fd (desc);
+      else
+	ctx->acl = acl_get_file (name, ACL_TYPE_ACCESS);
+      if (ctx->acl == NULL)
+	return acl_errno_valid (errno) ? -1 : 0;
+
+      /* With POSIX ACLs, a file cannot have "no" acl; a file without
+	 extended permissions has a "minimal" acl which is equivalent to the
+	 file mode.  */
+
+      if (S_ISDIR (mode))
+	{
+	  ctx->default_acl = acl_get_file (name, ACL_TYPE_DEFAULT);
+	  if (ctx->default_acl == NULL)
+	    return -1;
+	}
     }
 
 #  else /* HAVE_ACL_TYPE_EXTENDED */
@@ -83,6 +106,7 @@ get_permissions (const char *name, int desc, mode_t mode,
   if (ctx->acl == NULL)
     return acl_errno_valid (errno) ? -1 : 0;
 
+#  endif
 # endif
 
 #elif USE_ACL && defined GETACL /* Solaris, Cygwin, not HP-UX */

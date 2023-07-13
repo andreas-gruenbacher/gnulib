@@ -30,6 +30,10 @@
 # define GETACLCNT ACL_CNT
 #endif
 
+#if HAVE_SYS_RICHACL_H
+#include <sys/richacl.h>
+#endif
+
 /* On Linux, additional ACL related API is available in <acl/libacl.h>.  */
 #ifdef HAVE_ACL_LIBACL_H
 # include <acl/libacl.h>
@@ -252,6 +256,11 @@ extern int acl_nontrivial (int count, struct acl *entries);
 struct permission_context {
   mode_t mode;
 #ifdef USE_ACL
+# if HAVE_RICHACL_GET_FILE /* Linux */
+  struct richacl *richacl;
+  bool richacls_not_supported;
+# endif
+
 # if HAVE_ACL_GET_FILE /* Linux, FreeBSD, Mac OS X, IRIX, Tru64 */
   acl_t acl;
 #  if !HAVE_ACL_TYPE_EXTENDED
